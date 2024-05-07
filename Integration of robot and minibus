@@ -1,0 +1,232 @@
+import streamlit as st
+import pandas as pd
+import heapq
+from PIL import Image
+
+# Function for Dijkstra's algorithm
+def dijkstra(graph, start):
+    distances = {node: float('infinity') for node in graph}
+    distances[start] = 0
+    predecessors = {node: None for node in graph}
+    priority_queue = [(0, start)]
+    heapq.heapify(priority_queue)
+
+    while priority_queue:
+        current_distance, current_node = heapq.heappop(priority_queue)
+
+        if current_distance > distances[current_node]:
+            continue
+
+        for neighbor, weight in graph[current_node].items():
+            if neighbor not in distances:
+                continue
+
+            new_distance = current_distance + weight
+            if new_distance < distances[neighbor]:
+                distances[neighbor] = new_distance
+                predecessors[neighbor] = current_node
+                heapq.heappush(priority_queue, (new_distance, neighbor))
+
+    return distances, predecessors
+
+# Function to reconstruct the path
+def reconstruct_path(predecessors, start, end):
+    path = []
+    current_node = end
+    while current_node is not None:
+        path.append(current_node)
+        current_node = predecessors[current_node]
+    path.reverse()
+    return path
+
+# Function to generate O/D matrix
+def generate_od_matrix(graph, nodes):
+    od_matrix = {}
+    for start_node in nodes:
+        distances, predecessors = dijkstra(graph, start_node)
+
+        od_matrix[start_node] = {}
+        for end_node in nodes:
+            if start_node != end_node:
+                path = reconstruct_path(predecessors, start_node, end_node)
+                od_matrix[start_node][end_node] = path
+
+    return od_matrix
+
+# Function to load road network data
+def load_road_network(file_path):
+    # Read the Excel file and select the necessary columns
+    df = pd.read_excel(file_path)
+    link_data = df[['start_node', 'end_node', 'cost1', 'cost2']]
+
+    graph = {}
+    nodes = set()
+
+    # Iterate through the data and build the graph
+    for _, row in link_data.iterrows():
+        start_node = row['start_node']
+        end_node = row['end_node']
+        cost1 = row['cost1']
+        cost2 = row['cost2']
+
+        # Add nodes to the set
+        nodes.add(start_node)
+        nodes.add(end_node)
+
+        # Add edges and costs to the graph
+        if start_node not in graph:
+            graph[start_node] = {}
+        graph[start_node][end_node] = cost1  # Cost from start_node to end_node
+
+        if end_node not in graph:
+            graph[end_node] = {}
+        graph[end_node][start_node] = cost2  # Cost from end_node to start_node
+
+    # Convert the nodes set to a list
+    nodes = list(nodes)
+
+    return graph, nodes
+
+# Function to load robot paths
+def load_robot_paths(file_path):
+    df = pd.read_excel(file_path)
+    robot_paths = {}
+
+    for _, row in df.iterrows():
+        robot_number = row['robot_number']
+        path = row['path']
+        nodes = list(map(int, path.split('-')))
+        robot_paths[robot_number] = [(nodes[i], nodes[i + 1]) for i in range(len(nodes) - 1)]
+
+    return robot_paths
+
+# Function to reverse robot paths
+def reverse_robot_paths(robot_paths):
+    reversed_paths = {}
+
+    for robot_number, path in robot_paths.items():
+        reversed_path = [(end, start) for start, end in path[::-1]]
+        reversed_paths[robot_number] = reversed_path
+
+    return reversed_paths
+
+# Function to check overlap and non-overlap paths for forward and reverse paths
+def check_overlap_and_non_overlap(robot_paths, od_matrix, graph):
+    results = []
+
+    for robot_number, path in robot_paths.items():
+        overlapping_path = []
+        non_overlapping_path = []
+        overlapping_distance = 0
+        non_overlapping_distance = 0
+
+        for origin_node, destination_node in path:
+            if origin_node in od_matrix and destination_node in od_matrix[origin_node]:
+                shortest_path = od_matrix[origin_node][destination_node]
+                overlapping_path.extend(shortest_path)
+                overlapping_distance += sum(graph[node1][node2] for node1, node2 in zip(shortest_path, shortest_path[1:]))
+            else:
+                non_overlapping_path.append((origin_node, destination_node))
+                non_overlapping_distance += graph.get(origin_node, {}).get(destination_node, 0)
+
+        results.append({
+            "robot_number": robot_number,
+            "overlapping_path": overlapping_path,
+            "non_overlapping_path": non_overlapping_path,
+            "overlapping_distance": overlapping_distance
+
+        })
+
+    return pd.DataFrame(results)
+
+# Function to compare forward and reverse dataframes and select maximum overlapping distance
+def compare_forward_and_reverse(forward_df, reverse_df):
+    final_results = []
+
+    for robot_number in forward_df['robot_number']:
+        forward_row = forward_df[forward_df['robot_number'] == robot_number].iloc[0]
+        reverse_row = reverse_df[reverse_df['robot_number'] == robot_number].iloc[0]
+
+        if forward_row['overlapping_distance'] <= reverse_row['overlapping_distance']:
+            chosen_path = forward_row
+        else:
+            chosen_path = reverse_row
+
+        final_results.append({
+            'robot_number': robot_number,
+            'overlapping_path': chosen_path['overlapping_path'],
+            'non_overlapping_path': chosen_path['non_overlapping_path'],
+            'overlapping_distance': chosen_path['overlapping_distance']
+
+        })
+
+    return pd.DataFrame(final_results)
+
+# Function to render the welcome page
+def render_welcome_page():
+    st.markdown("<h1 style='color: blue;'>Robotic Last-Mile Logistics</h1>", unsafe_allow_html=True)
+    st.write("""
+        Welcome to the Robotic Last-Mile Logistics application! This app allows you to analyze the routing of autonomous robots attached to minibuses for efficient last-mile delivery.
+    """)
+
+    # Load the image (replace "robot.jpg" with the correct path to your image)
+    image = Image.open("robot.jpg")
+
+    # Display the image centered on the page using use_column_width=True
+    st.image(image, caption='Robot performing last-mile delivery', use_column_width=True)
+
+    # Optionally, you can add a video demonstrating the process (replace "robot_animation.mp4" with the correct path to your video)
+    # st.video("robot_animation.mp4")
+
+# Function to render the robot path analysis page
+def render_robot_path_analysis():
+    st.title("Robot Path Analysis")
+
+    # Prompt user to upload files
+    road_network_file = st.file_uploader("Upload Road Network File (Excel)", type=["xlsx", "xls"])
+    robot_path_file = st.file_uploader("Upload Robot Path File (Excel)", type=["xlsx", "xls"])
+
+    # Ensure both files are uploaded before proceeding
+    if road_network_file is not None and robot_path_file is not None:
+        # Load road network and robot paths data
+        graph, nodes = load_road_network(road_network_file)
+        robot_paths = load_robot_paths(robot_path_file)
+
+        # Generate O/D matrix
+        od_matrix = generate_od_matrix(graph, nodes)
+
+        # Check and analyze forward paths
+        forward_df = check_overlap_and_non_overlap(robot_paths, od_matrix, graph)
+
+        # Reverse robot paths
+        reversed_paths = reverse_robot_paths(robot_paths)
+
+        # Check and analyze reverse paths
+        reverse_df = check_overlap_and_non_overlap(reversed_paths, od_matrix, graph)
+
+        # Compare forward and reverse dataframes
+        final_df = compare_forward_and_reverse(forward_df, reverse_df)
+
+        # Display the analysis results
+        st.write("Robot Forward Path Analysis:")
+        st.dataframe(forward_df, width=800)  # Using dataframe function for a better view of results
+
+        st.write("Robot Reverse Path Analysis:")
+        st.dataframe(reverse_df, width=800)  # Using dataframe function for a better view of results
+
+        # Display the final results
+        st.write("Final Path Of Robot:")
+        st.dataframe(final_df, width=800)  # Using dataframe function for a better view of results
+
+# Main function to run the app
+def main():
+    st.sidebar.title("Navigation")
+    page_selection = st.sidebar.radio("Select a Page:", ["Welcome", "Robot Path Analysis"])
+
+    if page_selection == "Welcome":
+        render_welcome_page()
+    elif page_selection == "Robot Path Analysis":
+        render_robot_path_analysis()
+
+if __name__ == "__main__":
+    main()
